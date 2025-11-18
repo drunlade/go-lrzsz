@@ -4,7 +4,7 @@ A Go implementation of the ZModem file transfer protocol, converted from the C l
 
 ## Status
 
-🚧 **Work in Progress** - Core protocol infrastructure is complete.
+✅ **Core Implementation Complete** - All protocol and library components are implemented.
 
 ### Completed
 - ✅ Protocol constants and frame types
@@ -13,13 +13,12 @@ A Go implementation of the ZModem file transfer protocol, converted from the C l
 - ✅ I/O layer with timeout support
 - ✅ Frame encoding/decoding (binary and hex headers)
 - ✅ Data frame encoding/decoding
-
-### In Progress
-- ⏳ Sender implementation (state machine)
-- ⏳ Receiver implementation (state machine)
-- ⏳ Library API and session management
-- ⏳ SSH integration
-- ⏳ Callback system
+- ✅ Sender implementation (state machine)
+- ✅ Receiver implementation (state machine)
+- ✅ Library API and session management
+- ✅ SSH integration wrapper
+- ✅ Callback system
+- ✅ Progress tracking
 
 ## Overview
 
@@ -47,36 +46,80 @@ zmodem/
 ├── frame.go     # Frame encoding/decoding (headers and data)
 ├── escape.go    # ZDLE escaping/unescaping
 ├── io.go        # I/O layer with timeout support
+├── sender.go    # Sender implementation
+├── receiver.go  # Receiver implementation
+├── session.go   # Session management and high-level API
+├── ssh.go       # SSH integration wrapper
+├── callbacks.go # Callback system
+├── progress.go  # Progress tracking
 └── errors.go    # Error types
 ```
 
-## Example Usage (Planned)
+## Example Usage
 
 ```go
+package main
+
 import (
+    "context"
+    "fmt"
+    "os"
+    
     "golang.org/x/crypto/ssh"
     "github.com/drunlade/go-lrzsz/zmodem"
 )
 
-// Create SSH session
-session, _ := conn.NewSession()
-
-// Create ZModem session with callbacks
-zmodemSession, _ := zmodem.NewSSHSession(session,
-    zmodem.WithCallbacks(&zmodem.Callbacks{
-        OnFilePrompt: func(filename string, size int64, mode os.FileMode) (bool, error) {
-            // Prompt user to accept/reject file
-            return true, nil
+func main() {
+    // Setup SSH connection
+    config := &ssh.ClientConfig{
+        User: "user",
+        Auth: []ssh.AuthMethod{
+            ssh.Password("password"),
         },
-        OnProgress: func(filename string, transferred, total int64, rate float64) {
-            // Update progress display
-        },
-    }),
-)
-
-// Receive files
-ctx := context.Background()
-zmodemSession.ReceiveFiles(ctx, nil)
+        HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+    }
+    
+    conn, err := ssh.Dial("tcp", "host:22", config)
+    if err != nil {
+        panic(err)
+    }
+    defer conn.Close()
+    
+    session, err := conn.NewSession()
+    if err != nil {
+        panic(err)
+    }
+    defer session.Close()
+    
+    // Create ZModem session with callbacks
+    zmodemSession, err := zmodem.NewSSHSession(session,
+        zmodem.WithCallbacks(&zmodem.Callbacks{
+            OnFilePrompt: func(filename string, size int64, mode os.FileMode) (bool, error) {
+                fmt.Printf("Receive file: %s (%d bytes)? [y/n]: ", filename, size)
+                var response string
+                fmt.Scanln(&response)
+                return response == "y" || response == "Y", nil
+            },
+            OnProgress: func(filename string, transferred, total int64, rate float64) {
+                percent := float64(0)
+                if total > 0 {
+                    percent = float64(transferred) / float64(total) * 100
+                }
+                fmt.Printf("\r%s: %.1f%% (%.0f bytes/s)", filename, percent, rate)
+            },
+        }),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer zmodemSession.Close()
+    
+    // Receive files
+    ctx := context.Background()
+    if err := zmodemSession.ReceiveFiles(ctx, 0); err != nil {
+        panic(err)
+    }
+}
 ```
 
 ## References
