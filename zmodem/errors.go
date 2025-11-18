@@ -35,6 +35,12 @@ const (
 	
 	// ErrInvalidFrame indicates an invalid frame was received
 	ErrInvalidFrame
+	
+	// ErrFileSkipped indicates a file transfer was skipped
+	ErrFileSkipped
+	
+	// ErrRemoteCommandDenied indicates a remote command was denied
+	ErrRemoteCommandDenied
 )
 
 func (e *Error) Error() string {
@@ -58,6 +64,10 @@ func (t ErrorType) String() string {
 		return "cancelled"
 	case ErrInvalidFrame:
 		return "invalid frame"
+	case ErrFileSkipped:
+		return "file skipped"
+	case ErrRemoteCommandDenied:
+		return "remote command denied"
 	default:
 		return "unknown error"
 	}

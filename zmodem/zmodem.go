@@ -187,6 +187,8 @@ const (
 	CPMEOF  = 0x1A
 	WANTCRC = 0x43 // send C not NAK to get crc not checksum
 	WANTG   = 0x47 // Send G not NAK to get nonstop batch xmsn
+	TIMEOUT = -2   // Timeout error code
+	RCDO    = -3   // Carrier lost
 )
 
 // frametypes provides human-readable names for frame types
