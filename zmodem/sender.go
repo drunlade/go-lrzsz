@@ -197,8 +197,10 @@ func (s *Sender) ParseZRINIT(hdr Header) {
 	}
 	
 	// Calculate window spacing
+	// Note: Original C code used /4 for unreliable serial links
+	// For modern TCP/SSH, we use the full window to reduce ACK overhead
 	if s.txwindow > 0 {
-		s.txwspac = s.txwindow / 4
+		s.txwspac = s.txwindow
 	}
 	
 	// Mark as initialized
@@ -694,6 +696,9 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 	
 	buf := make([]byte, s.blockSize)
 	txwcnt := uint(0)
+	blocksSinceAck := 0
+	// Force periodic ACK requests to detect dead receivers (every ~64KB in streaming mode)
+	maxBlocksWithoutAck := 64
 	
 	for {
 		// Check context
@@ -724,9 +729,15 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		} else if s.txwindow > 0 && (txwcnt+uint(n)) >= s.txwspac {
 			txwcnt = 0
 			frameEnd = ZCRCQ
+		} else if blocksSinceAck >= maxBlocksWithoutAck {
+			// Periodic health check: request ACK even in streaming mode
+			blocksSinceAck = 0
+			frameEnd = ZCRCQ
 		} else {
 			frameEnd = ZCRCG
 		}
+		
+		blocksSinceAck++
 		
 		// Send data frame
 		if err := zsdata(s.writer, buf[:n], frameEnd, s.use32bitCRC); err != nil {
@@ -738,16 +749,24 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		
 		// Handle frame end types
 		if frameEnd == ZCRCW {
-			// Wait for ACK
+			// Wait for ACK with retry
 			frameType, rxHdr, err := s.getHeader(0)
 			if err != nil {
-				return err
+				// On timeout/error, increment junk count and retry
+				junkCount++
+				if junkCount > 10 {
+					return NewError(ErrProtocol, "receiver not responding (too many timeouts)")
+				}
+				// Retry from current position
+				lastRxPos = uint32(bytesSent) - uint32(n) // Back up one block
+				continue
 			}
 			
 			switch frameType {
 			case ZACK:
 				lastRxPos = rclhdr(rxHdr)
 				junkCount = 0
+				blocksSinceAck = 0
 			case ZRPOS:
 				// Receiver wants to resume at different position
 				rxpos := rclhdr(rxHdr)
@@ -779,12 +798,25 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 				}
 			}
 		} else if frameEnd == ZCRCQ {
-			// Wait for ACK but continue sending
+			// Wait for ACK but continue sending (with timeout detection)
 			frameType, rxHdr, err := s.getHeader(1)
-			if err == nil {
-				if frameType == ZACK {
-					lastRxPos = rclhdr(rxHdr)
-					junkCount = 0
+			if err != nil {
+				// Timeout or error - receiver may be dead
+				junkCount++
+				s.logger.Debug("ZCRCQ timeout/error (junkCount=%d): %v", junkCount, err)
+				if junkCount > 5 {
+					return NewError(ErrProtocol, "receiver not responding (no ACK for ZCRCQ)")
+				}
+			} else if frameType == ZACK {
+				lastRxPos = rclhdr(rxHdr)
+				junkCount = 0
+				blocksSinceAck = 0
+			} else if frameType == ZCAN {
+				return NewError(ErrCancelled, "receiver cancelled")
+			} else {
+				junkCount++
+				if junkCount > 5 {
+					return NewError(ErrProtocol, "unexpected response to ZCRCQ")
 				}
 			}
 		}
@@ -793,15 +825,24 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		if s.txwindow > 0 {
 			windowUsed := uint32(bytesSent) - lastRxPos
 			if windowUsed >= uint32(s.txwindow) {
-				// Window full - wait for ACK
-				frameType, rxHdr, err := s.getHeader(1)
-				if err != nil {
-					return err
-				}
-				if frameType == ZACK {
-					lastRxPos = rclhdr(rxHdr)
-				} else {
-					return NewError(ErrProtocol, "expected ZACK")
+				// Window full - wait for ACK with retry
+				for retries := 0; retries < 3; retries++ {
+					frameType, rxHdr, err := s.getHeader(1)
+					if err != nil {
+						if retries >= 2 {
+							return NewError(ErrProtocol, "receiver not responding (window ACK timeout)")
+						}
+						continue
+					}
+					if frameType == ZACK {
+						lastRxPos = rclhdr(rxHdr)
+						blocksSinceAck = 0
+						break
+					} else if frameType == ZCAN {
+						return NewError(ErrCancelled, "receiver cancelled")
+					} else {
+						return NewError(ErrProtocol, "expected ZACK")
+					}
 				}
 			}
 		}

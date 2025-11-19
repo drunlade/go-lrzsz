@@ -20,9 +20,6 @@ type Session struct {
 	// Callbacks
 	callbacks *Callbacks
 	
-	// Progress tracking
-	progress *ProgressTracker
-	
 	// Internal state
 	sender   *Sender
 	receiver *Receiver
@@ -122,9 +119,6 @@ func NewSession(reader ReaderWithTimeout, writer io.Writer, opts ...Option) *Ses
 		opt(s)
 	}
 	
-	// Create progress tracker
-	s.progress = NewProgressTracker(s.callbacks.OnProgress, s.config.ProgressInterval)
-	
 	// Create sender and receiver (will be initialized when needed)
 	senderConfig := &SenderConfig{
 		Use32BitCRC:   s.config.Use32BitCRC,
@@ -168,9 +162,6 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 	// Notify file start
 	s.callbacks.OnFileStart(filename, fileInfo.Size(), fileInfo.Mode())
 	
-	// Start progress tracking
-	s.progress.Start(filename, fileInfo.Size())
-	
 	// Build file header
 	fileHeader := BuildFileHeader(filename, fileInfo, 0, 0)
 	
@@ -185,16 +176,13 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 	// Send file
 	err := s.sender.SendFile(filename, file, fileInfo, fileHeader)
 	
-	// Complete progress tracking
-	duration := s.progress.Complete()
-	
 	if err != nil {
 		s.callbacks.OnError(err, "send file")
 		return err
 	}
 	
 	// Notify file complete
-	s.callbacks.OnFileComplete(filename, fileInfo.Size(), duration)
+	s.callbacks.OnFileComplete(filename, fileInfo.Size(), 0)
 	
 	return nil
 }
@@ -264,15 +252,9 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 	// Notify file start
 	s.callbacks.OnFileStart(filename, size, mode)
 	
-	// Start progress tracking
-	s.progress.Start(filename, size)
-	
 	// Receive file
 	s.logger.Info("ReceiveFile: receiving %d bytes", size)
 	err = s.receiver.ReceiveFile(file, size)
-	
-	// Complete progress tracking
-	duration := s.progress.Complete()
 	
 	if err != nil {
 		s.logger.Error("ReceiveFile: ReceiveFile error: %v", err)
@@ -280,7 +262,7 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 		return err
 	}
 	
-	s.logger.Info("ReceiveFile: completed in %v", duration)
+	s.logger.Info("ReceiveFile: completed")
 	
 	// Set file permissions and mtime if possible
 	if fileInfo, ok := file.(interface {
@@ -295,7 +277,7 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 	}
 	
 	// Notify file complete
-	s.callbacks.OnFileComplete(filename, size, duration)
+	s.callbacks.OnFileComplete(filename, size, 0)
 	
 	return nil
 }

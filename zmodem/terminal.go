@@ -352,6 +352,7 @@ func (t *TerminalIO) handleZModemTransfer() {
 		if len(filesToSend) > 0 {
 			// Send files
 			t.logger.Info("Sending %d file(s)", len(filesToSend))
+			transferFailed := false
 			for _, filename := range filesToSend {
 				// Open file
 				var file io.Reader
@@ -389,6 +390,12 @@ func (t *TerminalIO) handleZModemTransfer() {
 						t.logger.Info("File skipped by receiver: %s", filename)
 						continue
 					}
+					// Check if it's a fatal error (timeout, cancelled)
+					if zmErr, ok := err.(*Error); ok && (zmErr.Type == ErrTimeout || zmErr.Type == ErrCancelled) {
+						t.logger.Error("Fatal error sending %s: %v (receiver may have crashed)", filename, err)
+						transferFailed = true
+						break
+					}
 					// Other errors - log and break
 					t.logger.Error("Failed to send %s: %v", filename, err)
 					break
@@ -396,11 +403,16 @@ func (t *TerminalIO) handleZModemTransfer() {
 				t.logger.Info("File sent successfully: %s", filename)
 			}
 			
-			// Send ZFIN to end the session
-			t.logger.Info("All files sent, sending ZFIN")
-			hdr = stohdr(0)
-			if err := zshhdr(writer, ZFIN, hdr); err != nil {
-				t.logger.Error("Failed to send ZFIN: %v", err)
+			// Only send ZFIN if transfer didn't fail fatally
+			if !transferFailed {
+				t.logger.Info("All files sent, sending ZFIN")
+				hdr = stohdr(0)
+				if err := zshhdr(writer, ZFIN, hdr); err != nil {
+					t.logger.Error("Failed to send ZFIN: %v", err)
+					return
+				}
+			} else {
+				t.logger.Info("Transfer failed fatally, skipping ZFIN (receiver likely crashed)")
 				return
 			}
 		} else {
