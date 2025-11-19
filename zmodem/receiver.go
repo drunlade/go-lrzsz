@@ -36,6 +36,9 @@ type Receiver struct {
 	
 	// Context
 	ctx context.Context
+	
+	// Logger
+	logger Logger
 }
 
 // ReceiverConfig holds configuration for a receiver.
@@ -47,6 +50,7 @@ type ReceiverConfig struct {
 	BufferSize    int
 	Attention     []byte
 	Context       context.Context
+	Logger        Logger
 }
 
 // DefaultReceiverConfig returns a default receiver configuration.
@@ -71,7 +75,11 @@ func NewReceiver(reader ReaderWithTimeout, writer io.Writer, config *ReceiverCon
 	frameReader := &frameReaderWrapper{io: zio}
 	unescaper := newZdlreadUnescaper(frameReader)
 	
-	return &Receiver{
+	if config.Logger == nil {
+		config.Logger = NoopLogger{}
+	}
+	
+	r := &Receiver{
 		io:           zio,
 		writer:       writer,
 		reader:       frameReader,
@@ -83,7 +91,11 @@ func NewReceiver(reader ReaderWithTimeout, writer io.Writer, config *ReceiverCon
 		bufferSize:   config.BufferSize,
 		attn:         config.Attention,
 		ctx:          config.Context,
+		logger:       config.Logger,
 	}
+	
+	r.logger.Info("Receiver created (CRC32=%v, escapeCtrl=%v)", config.Use32BitCRC, config.EscapeControl)
+	return r
 }
 
 // SendZRINIT sends a ZRINIT frame to initialize the receiver.
@@ -103,8 +115,15 @@ func (r *Receiver) SendZRINIT(frameType int) error {
 	hdr[ZF2] = 0
 	hdr[ZF3] = 0
 	
+	r.logger.Info("SendZRINIT: frame=%s(%d), flags=[%02x %02x %02x %02x]", 
+		FrameTypeName(frameType), frameType, hdr[ZF0], hdr[ZF1], hdr[ZF2], hdr[ZF3])
+	
 	// Send hex header (initial frames use hex)
-	return zshhdr(r.writer, frameType, hdr)
+	err := zshhdr(r.writer, frameType, hdr)
+	if err != nil {
+		r.logger.Error("SendZRINIT: zshhdr error: %v", err)
+	}
+	return err
 }
 
 // WaitForZFILE waits for a ZFILE frame from the sender.
@@ -117,6 +136,8 @@ func (r *Receiver) WaitForZFILE() ([]byte, error) {
 	maxTries := 15
 	errors := 0
 	
+	r.logger.Info("WaitForZFILE: starting (maxTries=%d)", maxTries)
+	
 	for n := maxTries; n > 0 && r.zrqinitsReceived < 10; n-- {
 		// Send ZRINIT
 		if err := r.SendZRINIT(ZRINIT); err != nil {
@@ -124,17 +145,24 @@ func (r *Receiver) WaitForZFILE() ([]byte, error) {
 		}
 		
 		// Wait for response
+		r.logger.Debug("WaitForZFILE: waiting for response (try %d/%d)", maxTries-n+1, maxTries)
 		frameType, hdr, err := r.getHeader(0)
 		if err != nil {
 			if IsTimeout(err) {
+				r.logger.Debug("WaitForZFILE: timeout waiting for response")
 				continue
 			}
+			r.logger.Error("WaitForZFILE: getHeader error: %v", err)
 			return nil, err
 		}
+		
+		r.logger.Info("WaitForZFILE: received frame %s(%d), hdr=[%02x %02x %02x %02x]", 
+			FrameTypeName(frameType), frameType, hdr[0], hdr[1], hdr[2], hdr[3])
 		
 		switch frameType {
 		case ZRQINIT:
 			// Sender is initializing - this is OK
+			r.logger.Debug("WaitForZFILE: received ZRQINIT (count=%d)", r.zrqinitsReceived+1)
 			r.zrqinitsReceived++
 			continue
 			
@@ -147,6 +175,7 @@ func (r *Receiver) WaitForZFILE() ([]byte, error) {
 			
 		case ZFILE:
 			// Parse file header flags
+			r.logger.Info("WaitForZFILE: received ZFILE frame")
 			r.zconv = hdr[ZF0]
 			if r.zconv == 0 {
 				r.zconv = ZCBIN // Default to binary
@@ -161,10 +190,14 @@ func (r *Receiver) WaitForZFILE() ([]byte, error) {
 			r.zmanag = hdr[ZF1]
 			r.ztrans = hdr[ZF2]
 			
+			r.logger.Debug("WaitForZFILE: zconv=%02x, zmanag=%02x, ztrans=%02x", r.zconv, r.zmanag, r.ztrans)
+			
 			// Receive file header data
 			fileHeader := make([]byte, r.bufferSize)
+			r.logger.Debug("WaitForZFILE: receiving file header data")
 			bytesReceived, frameEnd, err := zrdata(r.reader, r.unescaper, fileHeader, r.use32bitCRC)
 			if err != nil {
+				r.logger.Error("WaitForZFILE: zrdata error: %v", err)
 				// Send NAK
 				hdr = stohdr(0)
 				if err := zshhdr(r.writer, ZNAK, hdr); err != nil {
@@ -176,7 +209,10 @@ func (r *Receiver) WaitForZFILE() ([]byte, error) {
 				continue
 			}
 			
+			r.logger.Debug("WaitForZFILE: received %d bytes, frameEnd=%d", bytesReceived, frameEnd)
+			
 			if frameEnd == GOTCRCW {
+				r.logger.Info("WaitForZFILE: file header complete")
 				return fileHeader[:bytesReceived], nil
 			}
 			

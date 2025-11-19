@@ -25,11 +25,12 @@ var zsendlineTab [256]escapeType
 //   - turboEscape: if true, use turbo escape mode (fewer escapes)
 func initZsendlineTab(zctlesc bool, turboEscape bool) {
 	for i := 0; i < 256; i++ {
-		if i&0x80 != 0 {
-			// High bit set - no escaping needed
+		// Match C code: if (i & 0140) - 0140 octal = 0x60 = bits 5 & 6
+		if i&0x60 != 0 {
+			// Bits 5 or 6 set - no escaping needed
 			zsendlineTab[i] = escapeNone
 		} else {
-			// Low bit set - check if escaping needed
+			// Neither bit 5 nor 6 set - check if escaping needed
 			switch i {
 			case ZDLE:
 				zsendlineTab[i] = escapeAlways
@@ -78,7 +79,8 @@ type zsendlineEscaper struct {
 func newZsendlineEscaper(writer io.Writer, zctlesc bool, turboEscape bool) *zsendlineEscaper {
 	tab := [256]escapeType{}
 	for i := 0; i < 256; i++ {
-		if i&0x80 != 0 {
+		// Match C code: if (i & 0140) - 0140 octal = 0x60 = bits 5 & 6
+		if i&0x60 != 0 {
 			tab[i] = escapeNone
 		} else {
 			switch i {
@@ -216,7 +218,9 @@ func (z *zdlreadUnescaper) ReadByte() (int, error) {
 	c := buf[0]
 	
 	// Quick check for non-control characters
-	if c&0x80 != 0 {
+	// Match C code: if (i & 0140) - 0140 octal = 0x60 = bits 5 & 6
+	// If either bit 5 or 6 is set, it's a printable char that doesn't need special handling
+	if c&0x60 != 0 {
 		return int(c), nil
 	}
 	

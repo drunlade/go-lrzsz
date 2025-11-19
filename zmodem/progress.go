@@ -105,3 +105,4 @@ func (pt *ProgressTracker) GetStats() (filename string, transferred, total int64
 	return
 }
 
+

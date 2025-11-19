@@ -244,3 +244,67 @@ func (s *SSHSession) Stderr() io.Reader {
 	return s.stderr
 }
 
+// SendFileWhenRemoteReceives sends a file when the remote runs 'rz' (receiver).
+// This is the opposite of SendFiles - the remote is ready to receive, not send.
+func (s *SSHSession) SendFileWhenRemoteReceives(ctx context.Context, file FileInfo) error {
+	// Start remote rz command (they will receive)
+	if err := s.sshSession.Start("rz --zmodem"); err != nil {
+		return err
+	}
+	
+	// Wait for command to finish in background
+	done := make(chan error, 1)
+	go func() {
+		done <- s.sshSession.Wait()
+	}()
+	
+	// Initialize sender - this will wait for ZRQINIT from remote and respond with ZRINIT
+	if err := s.Session.sender.GetReceiverInit(); err != nil {
+		s.stdin.Close()
+		return err
+	}
+	
+	// Open file
+	var fileReader io.Reader
+	var err error
+	if s.Session.callbacks.OnFileOpen != nil {
+		fileReader, _, err = s.Session.callbacks.OnFileOpen(file.Filename)
+	} else {
+		f, err2 := os.Open(file.Filename)
+		if err2 != nil {
+			s.stdin.Close()
+			return err2
+		}
+		fileReader = f
+		defer f.Close()
+	}
+	if err != nil {
+		s.stdin.Close()
+		return err
+	}
+	
+	// Build file header
+	fileHeader := BuildFileHeader(file.Filename, file.Info, 0, 0)
+	
+	// Send file using the sender directly
+	if err := s.Session.sender.SendFile(file.Filename, fileReader, file.Info, fileHeader); err != nil {
+		s.stdin.Close()
+		return err
+	}
+	
+	// Close stdin to signal completion
+	s.stdin.Close()
+	
+	// Wait for remote command to finish
+	select {
+	case err2 := <-done:
+		if err2 != nil {
+			return err2
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	
+	return nil
+}
+

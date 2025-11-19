@@ -29,6 +29,9 @@ type Session struct {
 	
 	// Context
 	ctx context.Context
+	
+	// Logger
+	logger Logger
 }
 
 // Config holds session configuration.
@@ -98,6 +101,13 @@ func WithContext(ctx context.Context) Option {
 	}
 }
 
+// WithLogger sets a logger for protocol debugging.
+func WithSessionLogger(logger Logger) Option {
+	return func(s *Session) {
+		s.logger = logger
+	}
+}
+
 // NewSession creates a new ZModem session.
 func NewSession(reader ReaderWithTimeout, writer io.Writer, opts ...Option) *Session {
 	s := &Session{
@@ -127,6 +137,7 @@ func NewSession(reader ReaderWithTimeout, writer io.Writer, opts ...Option) *Ses
 		ZNulls:        s.config.ZNulls,
 		Attention:     s.config.Attention,
 		Context:       s.ctx,
+		Logger:        s.logger,
 	}
 	
 	receiverConfig := &ReceiverConfig{
@@ -137,6 +148,7 @@ func NewSession(reader ReaderWithTimeout, writer io.Writer, opts ...Option) *Ses
 		BufferSize:    s.config.MaxBlockSize,
 		Attention:     s.config.Attention,
 		Context:       s.ctx,
+		Logger:        s.logger,
 	}
 	
 	s.sender = NewSender(reader, writer, senderConfig)
@@ -162,10 +174,12 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 	// Build file header
 	fileHeader := BuildFileHeader(filename, fileInfo, 0, 0)
 	
-	// Initialize receiver if needed
-	if err := s.sender.GetReceiverInit(); err != nil {
-		s.callbacks.OnError(err, "receiver initialization")
-		return err
+	// Initialize receiver if needed (skip if already initialized)
+	if !s.sender.initialized {
+		if err := s.sender.GetReceiverInit(); err != nil {
+			s.callbacks.OnError(err, "receiver initialization")
+			return err
+		}
 	}
 	
 	// Send file
@@ -193,19 +207,27 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 		ctx = s.ctx
 	}
 	
+	s.logger.Info("ReceiveFile: waiting for ZFILE")
+	
 	// Wait for ZFILE
 	fileHeader, err := s.receiver.WaitForZFILE()
 	if err != nil {
+		s.logger.Error("ReceiveFile: WaitForZFILE error: %v", err)
 		s.callbacks.OnError(err, "wait for ZFILE")
 		return err
 	}
 	
+	s.logger.Debug("ReceiveFile: got ZFILE header: %q", fileHeader)
+	
 	// Parse file header
 	filename, size, mtime, mode, _, _, err := ParseFileHeader(fileHeader)
 	if err != nil {
+		s.logger.Error("ReceiveFile: ParseFileHeader error: %v", err)
 		s.callbacks.OnError(err, "parse file header")
 		return err
 	}
+	
+	s.logger.Info("ReceiveFile: file=%s, size=%d, mode=%o, mtime=%d", filename, size, mode, mtime)
 	
 	// Prompt user
 	accept, err := s.callbacks.OnFilePrompt(filename, size, mode)
@@ -246,15 +268,19 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 	s.progress.Start(filename, size)
 	
 	// Receive file
+	s.logger.Info("ReceiveFile: receiving %d bytes", size)
 	err = s.receiver.ReceiveFile(file, size)
 	
 	// Complete progress tracking
 	duration := s.progress.Complete()
 	
 	if err != nil {
+		s.logger.Error("ReceiveFile: ReceiveFile error: %v", err)
 		s.callbacks.OnError(err, "receive file")
 		return err
 	}
+	
+	s.logger.Info("ReceiveFile: completed in %v", duration)
 	
 	// Set file permissions and mtime if possible
 	if fileInfo, ok := file.(interface {
@@ -314,7 +340,15 @@ func (s *Session) SendFiles(ctx context.Context, files []FileInfo) error {
 		
 		// Send file
 		if err := s.SendFile(ctx, fileInfo.Filename, file, fileInfo.Info); err != nil {
-			// Check if we should retry
+			// Check if file was skipped
+			if zmErr, ok := err.(*Error); ok && zmErr.Type == ErrFileSkipped {
+				// File skipped by receiver, log and continue
+				s.logger.Info("File skipped by receiver: %s", fileInfo.Filename)
+				s.callbacks.OnError(err, "send file")
+				continue
+			}
+			
+			// For other errors, check if we should retry
 			if s.callbacks.OnError(err, "send file") {
 				// Retry once
 				if err := s.SendFile(ctx, fileInfo.Filename, file, fileInfo.Info); err != nil {

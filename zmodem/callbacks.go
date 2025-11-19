@@ -36,6 +36,10 @@ type Callbacks struct {
 	// OnEvent is called for protocol events (debugging/logging).
 	OnEvent func(event Event)
 	
+	// OnFileList is called when the remote initiates a receive (runs 'rz').
+	// It should return a list of files to send, or nil/empty slice if no files to send.
+	OnFileList func() ([]string, error)
+	
 	// OnFileOpen is called when opening a file for reading (sender).
 	// If nil, uses default file opening.
 	OnFileOpen func(filename string) (io.Reader, os.FileInfo, error)
@@ -138,6 +142,7 @@ func mergeCallbacks(user *Callbacks) *Callbacks {
 	}
 	
 	// File operations (nil means use default)
+	result.OnFileList = user.OnFileList
 	result.OnFileOpen = user.OnFileOpen
 	result.OnFileCreate = user.OnFileCreate
 	

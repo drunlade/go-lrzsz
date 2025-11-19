@@ -120,11 +120,8 @@ func zsbhdr(w FrameWriter, frameType int, hdr Header, use32bitCRC bool, znulls i
 		}
 	}
 	
-	// Send ZPAD and ZDLE
-	if err := w.WriteByte(ZPAD); err != nil {
-		return err
-	}
-	if err := w.WriteByte(ZDLE); err != nil {
+	// Send ZPAD and ZDLE (raw, no escaping - match xsendline in C)
+	if _, err := w.Write([]byte{ZPAD, ZDLE}); err != nil {
 		return err
 	}
 	
@@ -132,8 +129,8 @@ func zsbhdr(w FrameWriter, frameType int, hdr Header, use32bitCRC bool, znulls i
 		return zsbhdr32(w, frameType, hdr)
 	}
 	
-	// 16-bit CRC binary header
-	if err := w.WriteByte(ZBIN); err != nil {
+	// 16-bit CRC binary header (raw, no escaping - match xsendline in C)
+	if _, err := w.Write([]byte{ZBIN}); err != nil {
 		return err
 	}
 	
@@ -176,8 +173,8 @@ func zsbhdr(w FrameWriter, frameType int, hdr Header, use32bitCRC bool, znulls i
 // zsbhdr32 sends a ZModem binary header with 32-bit CRC.
 // This matches the C function zsbh32() from zm.c.
 func zsbhdr32(w FrameWriter, frameType int, hdr Header) error {
-	// Send ZBIN32
-	if err := w.WriteByte(ZBIN32); err != nil {
+	// Send ZBIN32 (raw, no escaping - match xsendline in C)
+	if _, err := w.Write([]byte{ZBIN32}); err != nil {
 		return err
 	}
 	
@@ -458,11 +455,8 @@ func zsdata(w FrameWriter, buf []byte, frameend int, use32bitCRC bool) error {
 		crc = updcrc16(b, crc)
 	}
 	
-	// Send ZDLE and frame end
-	if err := w.WriteByte(ZDLE); err != nil {
-		return err
-	}
-	if err := escaper.WriteByte(byte(frameend)); err != nil {
+	// Send ZDLE and frame end (both raw - match xsendline in C)
+	if _, err := w.Write([]byte{ZDLE, byte(frameend)}); err != nil {
 		return err
 	}
 	crc = updcrc16(byte(frameend), crc)
@@ -478,9 +472,9 @@ func zsdata(w FrameWriter, buf []byte, frameend int, use32bitCRC bool) error {
 		return err
 	}
 	
-	// Send XON for ZCRCW frames
+	// Send XON for ZCRCW frames (raw - match xsendline in C)
 	if frameend == ZCRCW {
-		if err := w.WriteByte(XON); err != nil {
+		if _, err := w.Write([]byte{XON}); err != nil {
 			return err
 		}
 		return w.Flush()
@@ -504,11 +498,8 @@ func zsda32(w FrameWriter, buf []byte, frameend int) error {
 		crc = updcrc32(b, crc)
 	}
 	
-	// Send ZDLE and frame end
-	if err := w.WriteByte(ZDLE); err != nil {
-		return err
-	}
-	if err := escaper.WriteByte(byte(frameend)); err != nil {
+	// Send ZDLE and frame end (both raw - match xsendline in C)
+	if _, err := w.Write([]byte{ZDLE, byte(frameend)}); err != nil {
 		return err
 	}
 	crc = updcrc32(byte(frameend), crc)
@@ -517,16 +508,18 @@ func zsda32(w FrameWriter, buf []byte, frameend int) error {
 	crc = CRC32Finalize(crc)
 	
 	// Send CRC bytes (little-endian) with escaping
+	// Match C code: if (c & 0140) xsendline else zsendline
+	// 0140 octal = 0x60 hex = bits 5 & 6
 	for i := 0; i < 4; i++ {
 		crcByte := byte(crc)
-		// Check if byte needs escaping
-		if crcByte&0x80 != 0 {
-			// High bit set - can send directly
-			if err := w.WriteByte(crcByte); err != nil {
+		// Check if byte needs escaping (match C code logic)
+		if crcByte&0x60 != 0 {
+			// Bits 5 or 6 set - send raw (xsendline in C)
+			if _, err := w.Write([]byte{crcByte}); err != nil {
 				return err
 			}
 		} else {
-			// May need escaping
+			// May need escaping (zsendline in C)
 			if err := escaper.WriteByte(crcByte); err != nil {
 				return err
 			}
@@ -534,9 +527,9 @@ func zsda32(w FrameWriter, buf []byte, frameend int) error {
 		crc >>= 8
 	}
 	
-	// Send XON for ZCRCW frames
+	// Send XON for ZCRCW frames (raw - match xsendline in C)
 	if frameend == ZCRCW {
-		if err := w.WriteByte(XON); err != nil {
+		if _, err := w.Write([]byte{XON}); err != nil {
 			return err
 		}
 		return w.Flush()
