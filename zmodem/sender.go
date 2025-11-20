@@ -12,34 +12,34 @@ import (
 // This implements the sender state machine from lsz.c.
 type Sender struct {
 	// I/O
-	io          *zmodemIO
-	writer      FrameWriter
-	reader      FrameReader
-	unescaper   *zdlreadUnescaper
-	
+	io        *zmodemIO
+	writer    FrameWriter
+	reader    FrameReader
+	unescaper *zdlreadUnescaper
+
 	// Configuration
-	use32bitCRC bool
-	escapeCtrl  bool
-	turboEscape bool
-	timeout     int
-	windowSize  uint
-	blockSize   int
+	use32bitCRC  bool
+	escapeCtrl   bool
+	turboEscape  bool
+	timeout      int
+	windowSize   uint
+	blockSize    int
 	maxBlockSize int
-	
+
 	// Receiver capabilities (from ZRINIT)
-	rxflags     byte
-	rxflags2    byte
-	rxbuflen    uint16
-	txwindow    uint
-	txwspac     uint
-	
+	rxflags  byte
+	rxflags2 byte
+	rxbuflen uint16
+	txwindow uint
+	txwspac  uint
+
 	// State
 	zrqinitsSent int
 	znulls       int
 	attn         []byte
-	initialized  bool  // Set to true after successful ZRINIT exchange
+	initialized  bool // Set to true after successful ZRINIT exchange
 	logger       Logger
-	
+
 	// Progress tracking
 	callbacks        *Callbacks
 	progressInterval time.Duration
@@ -47,7 +47,7 @@ type Sender struct {
 	currentFileSize  int64
 	startTime        time.Time
 	lastProgressTime time.Time
-	
+
 	// Context
 	ctx context.Context
 }
@@ -56,23 +56,23 @@ type Sender struct {
 func NewSender(reader ReaderWithTimeout, writer io.Writer, config *SenderConfig) *Sender {
 	// Create I/O layer
 	zio := newZmodemIO(reader, writer, 128, 256, config.Timeout)
-	
+
 	// Create frame writer with escaping
 	escaper := newZsendlineEscaper(writer, config.EscapeControl, config.TurboEscape)
 	frameWriter := &frameWriterWrapper{
 		writer:  writer,
 		escaper: escaper,
 	}
-	
+
 	// Create frame reader and unescaper
 	frameReader := &frameReaderWrapper{io: zio}
 	unescaper := newZdlreadUnescaper(frameReader)
-	
+
 	logger := config.Logger
 	if logger == nil {
 		logger = NoopLogger{}
 	}
-	
+
 	return &Sender{
 		io:               zio,
 		writer:           frameWriter,
@@ -172,10 +172,10 @@ func (s *Sender) ParseZRINIT(hdr Header) {
 	// Parse receiver capabilities
 	s.rxflags = hdr[ZF0]
 	s.rxflags2 = hdr[ZF1]
-	
+
 	// Determine if we should use 32-bit CRC
 	s.use32bitCRC = s.use32bitCRC && (s.rxflags&CANFC32 != 0)
-	
+
 	// Update escape control based on receiver
 	oldEscape := s.escapeCtrl
 	s.escapeCtrl = s.escapeCtrl || (s.rxflags&TESCCTL != 0)
@@ -185,17 +185,17 @@ func (s *Sender) ParseZRINIT(hdr Header) {
 			fw.escaper = newZsendlineEscaper(s.writer, s.escapeCtrl, s.turboEscape)
 		}
 	}
-	
+
 	// Get receiver buffer length (little-endian from ZP0, ZP1)
 	s.rxbuflen = uint16(hdr[ZP0]) | (uint16(hdr[ZP1]) << 8)
-	
+
 	// Check if receiver supports full duplex
 	if s.rxflags&CANFDX == 0 {
 		s.txwindow = 0
 	} else {
 		s.txwindow = s.windowSize
 	}
-	
+
 	// Validate and adjust buffer length
 	if s.rxbuflen < 32 || s.rxbuflen > uint16(s.maxBlockSize) {
 		s.rxbuflen = uint16(s.maxBlockSize)
@@ -203,19 +203,19 @@ func (s *Sender) ParseZRINIT(hdr Header) {
 	if s.rxbuflen == 0 {
 		s.rxbuflen = 1024
 	}
-	
+
 	// Adjust block size based on receiver buffer
 	if s.rxbuflen > 0 && s.blockSize > int(s.rxbuflen) {
 		s.blockSize = int(s.rxbuflen)
 	}
-	
+
 	// Calculate window spacing
 	// Note: Original C code used /4 for unreliable serial links
 	// For modern TCP/SSH, we use the full window to reduce ACK overhead
 	if s.txwindow > 0 {
 		s.txwspac = s.txwindow
 	}
-	
+
 	// Mark as initialized
 	s.initialized = true
 }
@@ -231,9 +231,9 @@ func (s *Sender) ParseZRINIT(hdr Header) {
 func (s *Sender) GetReceiverInit() error {
 	oldTimeout := s.timeout
 	s.timeout = 100 // 10 seconds for init
-	
+
 	dontSendZRQINIT := true
-	
+
 	for n := 10; n > 0; n-- {
 		// Send ZRQINIT if needed (but not on first iteration)
 		if s.zrqinitsSent < 4 && n != 10 && !dontSendZRQINIT {
@@ -244,7 +244,7 @@ func (s *Sender) GetReceiverInit() error {
 			}
 		}
 		dontSendZRQINIT = false
-		
+
 		// Wait for response
 		frameType, hdr, err := s.getHeader(1)
 		if err != nil {
@@ -257,7 +257,7 @@ func (s *Sender) GetReceiverInit() error {
 			}
 			return err
 		}
-		
+
 		switch frameType {
 		case ZCHALLENGE:
 			// Echo receiver's challenge number
@@ -266,28 +266,28 @@ func (s *Sender) GetReceiverInit() error {
 				return err
 			}
 			continue
-			
+
 		case ZCOMMAND:
 			// Receiver didn't see our ZRQINIT
 			continue
-			
+
 		case ZRINIT:
 			// Parse receiver capabilities
 			s.ParseZRINIT(hdr)
 			s.timeout = oldTimeout
 			s.initialized = true
 			return s.SendZSINIT()
-			
+
 		case ZCAN:
 			return NewError(ErrCancelled, "receiver cancelled")
-			
+
 		case TIMEOUT:
 			// Force one more ZRQINIT on first timeout
 			if n == 10 {
 				continue
 			}
 			return NewError(ErrTimeout, "timeout waiting for ZRINIT")
-			
+
 		case ZRQINIT:
 			// Remote site is also a sender
 			if hdr[ZF0] == ZCOMMAND {
@@ -299,7 +299,7 @@ func (s *Sender) GetReceiverInit() error {
 				return err
 			}
 			continue
-			
+
 		default:
 			// Send NAK for unknown frames
 			hdr = stohdr(0)
@@ -309,7 +309,7 @@ func (s *Sender) GetReceiverInit() error {
 			continue
 		}
 	}
-	
+
 	return NewError(ErrTimeout, "timeout waiting for ZRINIT")
 }
 
@@ -322,11 +322,11 @@ func (s *Sender) SendZSINIT() error {
 		// Can skip ZSINIT
 		return nil
 	}
-	
+
 	errors := 0
 	for {
 		hdr := stohdr(0)
-		
+
 		// Send attention string with null terminator
 		// Match C code: sends 1+strlen(attn) bytes, minimum 1 byte
 		attnData := s.attn
@@ -334,7 +334,7 @@ func (s *Sender) SendZSINIT() error {
 			// Append null terminator
 			attnData = append(attnData, 0)
 		}
-		
+
 		if s.escapeCtrl {
 			hdr[ZF0] |= TESCCTL
 			if err := zshhdr(s.writer, ZSINIT, hdr); err != nil {
@@ -346,11 +346,11 @@ func (s *Sender) SendZSINIT() error {
 			}
 		}
 		s.logger.Info(FormatFrameLog("TX", ZSINIT, hdr, attnData, len(attnData)))
-		
+
 		if err := zsdata(s.writer, attnData, ZCRCW, s.use32bitCRC); err != nil {
 			return err
 		}
-		
+
 		// Wait for ZACK
 		frameType, rxHdr, err := s.getHeader(1)
 		if err != nil {
@@ -360,7 +360,7 @@ func (s *Sender) SendZSINIT() error {
 			continue
 		}
 		s.logger.Info(FormatFrameLog("RX", frameType, rxHdr, nil, 0))
-		
+
 		switch frameType {
 		case ZCAN:
 			return NewError(ErrCancelled, "receiver cancelled")
@@ -380,10 +380,10 @@ func (s *Sender) SendZSINIT() error {
 // Returns frame type, header, and error.
 func (s *Sender) getHeader(eflag int) (int, Header, error) {
 	maxGarbage := 1400 + 2400 // Zrwindow + Baudrate (defaults)
-	
+
 	for {
 		cancount := 5
-		
+
 		// Read first byte
 		c, err := s.io.ReadByte()
 		if err != nil {
@@ -392,12 +392,12 @@ func (s *Sender) getHeader(eflag int) (int, Header, error) {
 			}
 			return 0, Header{}, err
 		}
-		
+
 		// Check for timeout/carrier lost
 		if c == 0 {
 			return TIMEOUT, Header{}, NewError(ErrTimeout, "timeout")
 		}
-		
+
 		// Check for CAN*5 sequence
 		if c == CAN {
 			for cancount > 0 {
@@ -422,7 +422,7 @@ func (s *Sender) getHeader(eflag int) (int, Header, error) {
 				return ZCAN, Header{}, nil
 			}
 		}
-		
+
 		// Check for ZPAD
 		if c == ZPAD || c == (ZPAD|0x80) {
 			// Found ZPAD, look for more ZPADs and ZDLE
@@ -440,7 +440,7 @@ func (s *Sender) getHeader(eflag int) (int, Header, error) {
 					if err != nil {
 						return TIMEOUT, Header{}, NewError(ErrTimeout, "timeout")
 					}
-					
+
 					switch cInt {
 					case ZBIN:
 						// Binary header (16-bit CRC)
@@ -503,7 +503,7 @@ func (s *Sender) getHeader(eflag int) (int, Header, error) {
 				break
 			}
 		}
-		
+
 		// Not a ZModem frame - count as garbage
 		maxGarbage--
 		if maxGarbage == 0 {
@@ -526,14 +526,14 @@ func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo,
 	s.currentFileSize = fileInfo.Size()
 	s.startTime = time.Now()
 	s.lastProgressTime = s.startTime
-	
+
 	// Build file header flags
 	var hdr Header
-	hdr[ZF0] = ZCBIN // Binary transfer
+	hdr[ZF0] = ZCBIN      // Binary transfer
 	hdr[ZF1] = ZF1_ZMCLOB // Overwrite existing
-	hdr[ZF2] = 0 // No transport options
+	hdr[ZF2] = 0          // No transport options
 	hdr[ZF3] = 0
-	
+
 	errors := 0
 	for {
 		// Send ZFILE header
@@ -541,12 +541,12 @@ func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo,
 			return err
 		}
 		s.logger.Info(FormatFrameLog("TX", ZFILE, hdr, fileHeader, len(fileHeader)))
-		
+
 		// Send file header data
 		if err := zsdata(s.writer, fileHeader, ZCRCW, s.use32bitCRC); err != nil {
 			return err
 		}
-		
+
 		// Wait for response
 		frameType, rxHdr, err := s.getHeader(1)
 		if err != nil {
@@ -556,7 +556,7 @@ func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo,
 			continue
 		}
 		s.logger.Info(FormatFrameLog("RX", frameType, rxHdr, nil, 0))
-		
+
 		switch frameType {
 		case ZRINIT:
 			// Discard any remaining data
@@ -567,23 +567,23 @@ func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo,
 				}
 			}
 			continue
-			
+
 		case ZRQINIT:
 			// Remote site is also a sender
 			return NewError(ErrProtocol, "remote site is sender")
-			
+
 		case ZCAN:
 			return NewError(ErrCancelled, "receiver cancelled")
-			
+
 		case TIMEOUT:
 			if errors++; errors > 10 {
 				return NewError(ErrTimeout, "timeout waiting for file response")
 			}
 			continue
-			
+
 		case ZABORT, ZFIN:
 			return NewError(ErrCancelled, "receiver aborted")
-			
+
 		case ZCRC:
 			// Receiver wants file CRC
 			// Calculate and send CRC
@@ -593,11 +593,11 @@ func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo,
 				return err
 			}
 			continue
-			
+
 		case ZSKIP:
 			// Receiver skipped this file
 			return NewError(ErrFileSkipped, "receiver skipped file")
-			
+
 		case ZRPOS:
 			// Receiver wants to resume at position
 			rxpos := rclhdr(rxHdr)
@@ -611,7 +611,7 @@ func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo,
 			}
 			// Send file data
 			return s.sendFileData(file, fileInfo.Size(), rxpos)
-			
+
 		default:
 			if errors++; errors > 10 {
 				return NewError(ErrProtocol, "unexpected frame type")
@@ -624,28 +624,28 @@ func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo,
 // calculateFileCRC calculates the CRC32 of a file.
 func (s *Sender) calculateFileCRC(file io.Reader, size int64) uint32 {
 	crc := uint32(0xFFFFFFFF)
-	
-		// Read file and calculate CRC
-		buf := make([]byte, 8192)
-		remaining := size
-		for remaining > 0 {
-			readSize := int64(len(buf))
-			if readSize > remaining {
-				readSize = remaining
-			}
-			n, err := file.Read(buf[:readSize])
-			if err != nil && err != io.EOF {
-				break
-			}
-			if n == 0 {
-				break
-			}
-			for i := 0; i < n; i++ {
-				crc = updcrc32(buf[i], crc)
-			}
-			remaining -= int64(n)
+
+	// Read file and calculate CRC
+	buf := make([]byte, 8192)
+	remaining := size
+	for remaining > 0 {
+		readSize := int64(len(buf))
+		if readSize > remaining {
+			readSize = remaining
 		}
-	
+		n, err := file.Read(buf[:readSize])
+		if err != nil && err != io.EOF {
+			break
+		}
+		if n == 0 {
+			break
+		}
+		for i := 0; i < n; i++ {
+			crc = updcrc32(buf[i], crc)
+		}
+		remaining -= int64(n)
+	}
+
 	return CRC32Finalize(crc)
 }
 
@@ -656,7 +656,7 @@ func (s *Sender) calculateFileCRC(file io.Reader, size int64) uint32 {
 func BuildFileHeader(filename string, fileInfo os.FileInfo, filesLeft, totalLeft int) []byte {
 	// Build header: filename + null + file info
 	// Format: "filename\0size mtime mode 0 filesleft totalleft"
-	
+
 	// Build file info string: "size mtime mode 0 filesleft totalleft"
 	// Note: size is decimal, mtime and mode are octal
 	infoStr := fmt.Sprintf("%d %o %o 0 %d %d",
@@ -665,24 +665,24 @@ func BuildFileHeader(filename string, fileInfo os.FileInfo, filesLeft, totalLeft
 		fileInfo.Mode()&0777,      // Only permission bits, octal
 		filesLeft,
 		totalLeft)
-	
+
 	// Allocate buffer large enough for filename + null + info
 	totalSize := len(filename) + 1 + len(infoStr)
 	buf := make([]byte, totalSize)
 	pos := 0
-	
+
 	// Copy filename
 	copy(buf[pos:], []byte(filename))
 	pos += len(filename)
-	
+
 	// Null terminator
 	buf[pos] = 0
 	pos++
-	
+
 	// Copy file info
 	copy(buf[pos:], []byte(infoStr))
 	pos += len(infoStr)
-	
+
 	return buf
 }
 
@@ -696,14 +696,14 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		lastRxPos = startPos - 1
 	}
 	junkCount := 0
-	
+
 	// Send ZDATA header
 	hdr := stohdr(uint32(bytesSent))
 	if err := zsbhdr(s.writer, ZDATA, hdr, s.use32bitCRC, s.znulls); err != nil {
 		return err
 	}
 	s.logger.Info(FormatFrameLog("TX", ZDATA, hdr, nil, 0))
-	
+
 	// Seek to start position if needed
 	if startPos > 0 {
 		if seeker, ok := file.(io.Seeker); ok {
@@ -712,14 +712,14 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 			}
 		}
 	}
-	
+
 	buf := make([]byte, s.blockSize)
 	txwcnt := uint(0)
 	blocksSinceAck := 0
 	// Disable heartbeat by default for maximum speed (original C behavior)
 	// Set to 0 to disable, or a large number like 2048 for ~2MB heartbeat intervals
 	maxBlocksWithoutAck := 0
-	
+
 	for {
 		// Check context
 		if s.ctx != nil {
@@ -729,15 +729,15 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 			default:
 			}
 		}
-		
+
 		// Read data block
 		n, err := file.Read(buf)
 		if err != nil && err != io.EOF {
 			return err
 		}
-		
+
 		eofSeen := err == io.EOF || n == 0
-		
+
 		// Determine frame end type
 		var frameEnd int
 		if eofSeen {
@@ -756,17 +756,17 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		} else {
 			frameEnd = ZCRCG
 		}
-		
+
 		blocksSinceAck++
-		
+
 		// Send data frame
 		if err := zsdata(s.writer, buf[:n], frameEnd, s.use32bitCRC); err != nil {
 			return err
 		}
-		
+
 		bytesSent += int64(n)
 		txwcnt += uint(n)
-		
+
 		// Report progress periodically
 		if s.callbacks != nil && s.callbacks.OnProgress != nil && s.progressInterval > 0 {
 			now := time.Now()
@@ -777,7 +777,7 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 				s.lastProgressTime = now
 			}
 		}
-		
+
 		// Handle frame end types
 		if frameEnd == ZCRCW {
 			// Wait for ACK with retry
@@ -792,7 +792,7 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 				lastRxPos = uint32(bytesSent) - uint32(n) // Back up one block
 				continue
 			}
-			
+
 			switch frameType {
 			case ZACK:
 				lastRxPos = rclhdr(rxHdr)
@@ -810,7 +810,7 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 					}
 					bytesSent = int64(rxpos)
 					lastRxPos = rxpos
-					
+
 					// Send new ZDATA header
 					hdr := stohdr(uint32(bytesSent))
 					if err := zsbhdr(s.writer, ZDATA, hdr, s.use32bitCRC, s.znulls); err != nil {
@@ -851,7 +851,7 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 				}
 			}
 		}
-		
+
 		// Check window size
 		if s.txwindow > 0 {
 			windowUsed := uint32(bytesSent) - lastRxPos
@@ -877,12 +877,12 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 				}
 			}
 		}
-		
+
 		if eofSeen {
 			break
 		}
 	}
-	
+
 	// Send ZEOF
 	for {
 		hdr := stohdr(uint32(bytesSent))
@@ -890,13 +890,13 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 			return err
 		}
 		s.logger.Info(FormatFrameLog("TX", ZEOF, hdr, nil, 0))
-		
+
 		frameType, rxHdr, err := s.getHeader(0)
 		if err != nil {
 			return err
 		}
 		s.logger.Info(FormatFrameLog("RX", frameType, rxHdr, nil, 0))
-		
+
 		switch frameType {
 		case ZACK:
 			// File complete - report final progress
@@ -926,4 +926,3 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		}
 	}
 }
-

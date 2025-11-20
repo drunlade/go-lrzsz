@@ -26,28 +26,28 @@ func NewSSHSession(sshSession *ssh.Session, opts ...Option) (*SSHSession, error)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	stdout, err := sshSession.StdoutPipe()
 	if err != nil {
 		stdin.Close()
 		return nil, err
 	}
-	
+
 	stderr, err := sshSession.StderrPipe()
 	if err != nil {
 		stdin.Close()
 		return nil, err
 	}
-	
+
 	// Create a reader with timeout wrapper
 	reader := &sshReader{
 		reader:  stdout,
 		timeout: 100, // 10 seconds default
 	}
-	
+
 	// Create underlying ZModem session
 	session := NewSession(reader, stdin, opts...)
-	
+
 	return &SSHSession{
 		Session:    session,
 		sshSession: sshSession,
@@ -93,19 +93,19 @@ func (s *SSHSession) SendFiles(ctx context.Context, files []FileInfo) error {
 	if err := s.sshSession.Start("sz --zmodem"); err != nil {
 		return err
 	}
-	
+
 	// Wait for command to finish in background
 	done := make(chan error, 1)
 	go func() {
 		done <- s.sshSession.Wait()
 	}()
-	
+
 	// Send files
 	err := s.Session.SendFiles(ctx, files)
-	
+
 	// Close stdin to signal completion
 	s.stdin.Close()
-	
+
 	// Wait for command to finish
 	select {
 	case err2 := <-done:
@@ -115,7 +115,7 @@ func (s *SSHSession) SendFiles(ctx context.Context, files []FileInfo) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	
+
 	return err
 }
 
@@ -126,19 +126,19 @@ func (s *SSHSession) ReceiveFiles(ctx context.Context, maxFiles int) error {
 	if err := s.sshSession.Start("rz --zmodem"); err != nil {
 		return err
 	}
-	
+
 	// Wait for command to finish in background
 	done := make(chan error, 1)
 	go func() {
 		done <- s.sshSession.Wait()
 	}()
-	
+
 	// Receive files
 	err := s.Session.ReceiveFiles(ctx, maxFiles)
-	
+
 	// Close stdin to signal completion
 	s.stdin.Close()
-	
+
 	// Wait for command to finish
 	select {
 	case err2 := <-done:
@@ -148,7 +148,7 @@ func (s *SSHSession) ReceiveFiles(ctx context.Context, maxFiles int) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	
+
 	return err
 }
 
@@ -158,19 +158,19 @@ func (s *SSHSession) SendFile(ctx context.Context, filename string, file io.Read
 	if err := s.sshSession.Start("sz --zmodem"); err != nil {
 		return err
 	}
-	
+
 	// Wait for command to finish in background
 	done := make(chan error, 1)
 	go func() {
 		done <- s.sshSession.Wait()
 	}()
-	
+
 	// Send file
 	err := s.Session.SendFile(ctx, filename, file, fileInfo)
-	
+
 	// Close stdin to signal completion
 	s.stdin.Close()
-	
+
 	// Wait for command to finish
 	select {
 	case err2 := <-done:
@@ -180,7 +180,7 @@ func (s *SSHSession) SendFile(ctx context.Context, filename string, file io.Read
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	
+
 	return err
 }
 
@@ -190,19 +190,19 @@ func (s *SSHSession) ReceiveFile(ctx context.Context) error {
 	if err := s.sshSession.Start("rz --zmodem"); err != nil {
 		return err
 	}
-	
+
 	// Wait for command to finish in background
 	done := make(chan error, 1)
 	go func() {
 		done <- s.sshSession.Wait()
 	}()
-	
+
 	// Receive file
 	err := s.Session.ReceiveFile(ctx)
-	
+
 	// Close stdin to signal completion
 	s.stdin.Close()
-	
+
 	// Wait for command to finish
 	select {
 	case err2 := <-done:
@@ -212,30 +212,30 @@ func (s *SSHSession) ReceiveFile(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	
+
 	return err
 }
 
 // Close closes the SSH session and cleans up resources.
 func (s *SSHSession) Close() error {
 	var errs []error
-	
+
 	if s.stdin != nil {
 		if err := s.stdin.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	
+
 	if s.sshSession != nil {
 		if err := s.sshSession.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	
+
 	if len(errs) > 0 {
 		return errs[0] // Return first error
 	}
-	
+
 	return nil
 }
 
@@ -246,24 +246,25 @@ func (s *SSHSession) Stderr() io.Reader {
 
 // SendFileWhenRemoteReceives sends a file when the remote runs 'rz' (receiver).
 // This is the opposite of SendFiles - the remote is ready to receive, not send.
+// TODO: How is this different to ReceiveFile?
 func (s *SSHSession) SendFileWhenRemoteReceives(ctx context.Context, file FileInfo) error {
 	// Start remote rz command (they will receive)
 	if err := s.sshSession.Start("rz --zmodem"); err != nil {
 		return err
 	}
-	
+
 	// Wait for command to finish in background
 	done := make(chan error, 1)
 	go func() {
 		done <- s.sshSession.Wait()
 	}()
-	
+
 	// Initialize sender - this will wait for ZRQINIT from remote and respond with ZRINIT
 	if err := s.Session.sender.GetReceiverInit(); err != nil {
 		s.stdin.Close()
 		return err
 	}
-	
+
 	// Open file
 	var fileReader io.Reader
 	var err error
@@ -304,7 +305,6 @@ func (s *SSHSession) SendFileWhenRemoteReceives(ctx context.Context, file FileIn
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	
+
 	return nil
 }
-
