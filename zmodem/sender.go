@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
 // Sender handles sending files using the ZModem protocol.
@@ -39,6 +40,14 @@ type Sender struct {
 	initialized  bool  // Set to true after successful ZRINIT exchange
 	logger       Logger
 	
+	// Progress tracking
+	callbacks        *Callbacks
+	progressInterval time.Duration
+	currentFilename  string
+	currentFileSize  int64
+	startTime        time.Time
+	lastProgressTime time.Time
+	
 	// Context
 	ctx context.Context
 }
@@ -65,37 +74,41 @@ func NewSender(reader ReaderWithTimeout, writer io.Writer, config *SenderConfig)
 	}
 	
 	return &Sender{
-		io:           zio,
-		writer:       frameWriter,
-		reader:       frameReader,
-		unescaper:    unescaper,
-		use32bitCRC:  config.Use32BitCRC,
-		escapeCtrl:   config.EscapeControl,
-		turboEscape:  config.TurboEscape,
-		timeout:      config.Timeout,
-		windowSize:   config.WindowSize,
-		blockSize:    config.BlockSize,
-		maxBlockSize: config.MaxBlockSize,
-		znulls:       config.ZNulls,
-		attn:         config.Attention,
-		ctx:          config.Context,
-		logger:       logger,
+		io:               zio,
+		writer:           frameWriter,
+		reader:           frameReader,
+		unescaper:        unescaper,
+		use32bitCRC:      config.Use32BitCRC,
+		escapeCtrl:       config.EscapeControl,
+		turboEscape:      config.TurboEscape,
+		timeout:          config.Timeout,
+		windowSize:       config.WindowSize,
+		blockSize:        config.BlockSize,
+		maxBlockSize:     config.MaxBlockSize,
+		znulls:           config.ZNulls,
+		attn:             config.Attention,
+		ctx:              config.Context,
+		logger:           logger,
+		callbacks:        config.Callbacks,
+		progressInterval: config.ProgressInterval,
 	}
 }
 
 // SenderConfig holds configuration for a sender.
 type SenderConfig struct {
-	Use32BitCRC   bool
-	EscapeControl bool
-	TurboEscape   bool
-	Timeout       int // in tenths of seconds
-	WindowSize    uint
-	BlockSize     int
-	MaxBlockSize  int
-	ZNulls        int
-	Attention     []byte
-	Context       context.Context
-	Logger        Logger
+	Use32BitCRC      bool
+	EscapeControl    bool
+	TurboEscape      bool
+	Timeout          int // in tenths of seconds
+	WindowSize       uint
+	BlockSize        int
+	MaxBlockSize     int
+	ZNulls           int
+	Attention        []byte
+	Context          context.Context
+	Logger           Logger
+	Callbacks        *Callbacks
+	ProgressInterval time.Duration
 }
 
 // DefaultSenderConfig returns a default sender configuration.
@@ -508,6 +521,12 @@ func (s *Sender) getHeader(eflag int) (int, Header, error) {
 //   - fileInfo: file metadata
 //   - fileHeader: the ZFILE header data (filename + metadata string)
 func (s *Sender) SendFile(filename string, file io.Reader, fileInfo os.FileInfo, fileHeader []byte) error {
+	// Initialize progress tracking
+	s.currentFilename = filename
+	s.currentFileSize = fileInfo.Size()
+	s.startTime = time.Now()
+	s.lastProgressTime = s.startTime
+	
 	// Build file header flags
 	var hdr Header
 	hdr[ZF0] = ZCBIN // Binary transfer
@@ -697,8 +716,9 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 	buf := make([]byte, s.blockSize)
 	txwcnt := uint(0)
 	blocksSinceAck := 0
-	// Force periodic ACK requests to detect dead receivers (every ~64KB in streaming mode)
-	maxBlocksWithoutAck := 64
+	// Disable heartbeat by default for maximum speed (original C behavior)
+	// Set to 0 to disable, or a large number like 2048 for ~2MB heartbeat intervals
+	maxBlocksWithoutAck := 0
 	
 	for {
 		// Check context
@@ -729,7 +749,7 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		} else if s.txwindow > 0 && (txwcnt+uint(n)) >= s.txwspac {
 			txwcnt = 0
 			frameEnd = ZCRCQ
-		} else if blocksSinceAck >= maxBlocksWithoutAck {
+		} else if maxBlocksWithoutAck > 0 && blocksSinceAck >= maxBlocksWithoutAck {
 			// Periodic health check: request ACK even in streaming mode
 			blocksSinceAck = 0
 			frameEnd = ZCRCQ
@@ -746,6 +766,17 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		
 		bytesSent += int64(n)
 		txwcnt += uint(n)
+		
+		// Report progress periodically
+		if s.callbacks != nil && s.callbacks.OnProgress != nil && s.progressInterval > 0 {
+			now := time.Now()
+			if now.Sub(s.lastProgressTime) >= s.progressInterval {
+				elapsed := now.Sub(s.startTime).Seconds()
+				rate := float64(bytesSent) / elapsed // bytes per second
+				s.callbacks.OnProgress(s.currentFilename, bytesSent, s.currentFileSize, rate)
+				s.lastProgressTime = now
+			}
+		}
 		
 		// Handle frame end types
 		if frameEnd == ZCRCW {
@@ -868,7 +899,12 @@ func (s *Sender) sendFileData(file io.Reader, fileSize int64, startPos uint32) e
 		
 		switch frameType {
 		case ZACK:
-			// File complete
+			// File complete - report final progress
+			if s.callbacks != nil && s.callbacks.OnProgress != nil {
+				elapsed := time.Since(s.startTime).Seconds()
+				rate := float64(bytesSent) / elapsed
+				s.callbacks.OnProgress(s.currentFilename, bytesSent, s.currentFileSize, rate)
+			}
 			return nil
 		case ZRPOS:
 			// Receiver wants more data - resend from position

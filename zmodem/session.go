@@ -13,20 +13,20 @@ type Session struct {
 	// I/O
 	reader ReaderWithTimeout
 	writer io.Writer
-	
+
 	// Configuration
 	config *Config
-	
+
 	// Callbacks
 	callbacks *Callbacks
-	
+
 	// Internal state
 	sender   *Sender
 	receiver *Receiver
-	
+
 	// Context
 	ctx context.Context
-	
+
 	// Logger
 	logger Logger
 }
@@ -37,23 +37,23 @@ type Config struct {
 	Use32BitCRC   bool
 	EscapeControl bool
 	TurboEscape   bool
-	
+
 	// Timeouts (in tenths of seconds)
 	Timeout int
-	
+
 	// Window size
 	WindowSize uint
-	
+
 	// Block size
-	BlockSize      int
-	MaxBlockSize   int
-	
+	BlockSize    int
+	MaxBlockSize int
+
 	// ZNulls (number of nulls before ZDATA)
 	ZNulls int
-	
+
 	// Attention string
 	Attention []byte
-	
+
 	// Progress update interval
 	ProgressInterval time.Duration
 }
@@ -61,15 +61,15 @@ type Config struct {
 // DefaultConfig returns a default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Use32BitCRC:   true,
-		EscapeControl: false,
-		TurboEscape:   false,
-		Timeout:       100, // 10 seconds
-		WindowSize:    0,
-		BlockSize:     1024,
-		MaxBlockSize:  8192,
-		ZNulls:        0,
-		Attention:     []byte{0x03, 0x8E, 0}, // ^C + pause
+		Use32BitCRC:      true,
+		EscapeControl:    false,
+		TurboEscape:      false,
+		Timeout:          100, // 10 seconds
+		WindowSize:       0,
+		BlockSize:        1024 * 2,
+		MaxBlockSize:     1024 * 8,
+		ZNulls:           0,
+		Attention:        []byte{0x03, 0x8E, 0}, // ^C + pause
 		ProgressInterval: 100 * time.Millisecond,
 	}
 }
@@ -108,32 +108,34 @@ func WithSessionLogger(logger Logger) Option {
 // NewSession creates a new ZModem session.
 func NewSession(reader ReaderWithTimeout, writer io.Writer, opts ...Option) *Session {
 	s := &Session{
-		reader:   reader,
-		writer:   writer,
-		config:   DefaultConfig(),
+		reader:    reader,
+		writer:    writer,
+		config:    DefaultConfig(),
 		callbacks: defaultCallbacks(),
-		ctx:      context.Background(),
+		ctx:       context.Background(),
 	}
-	
+
 	for _, opt := range opts {
 		opt(s)
 	}
-	
+
 	// Create sender and receiver (will be initialized when needed)
 	senderConfig := &SenderConfig{
-		Use32BitCRC:   s.config.Use32BitCRC,
-		EscapeControl: s.config.EscapeControl,
-		TurboEscape:   s.config.TurboEscape,
-		Timeout:       s.config.Timeout,
-		WindowSize:    s.config.WindowSize,
-		BlockSize:     s.config.BlockSize,
-		MaxBlockSize:  s.config.MaxBlockSize,
-		ZNulls:        s.config.ZNulls,
-		Attention:     s.config.Attention,
-		Context:       s.ctx,
-		Logger:        s.logger,
+		Use32BitCRC:      s.config.Use32BitCRC,
+		EscapeControl:    s.config.EscapeControl,
+		TurboEscape:      s.config.TurboEscape,
+		Timeout:          s.config.Timeout,
+		WindowSize:       s.config.WindowSize,
+		BlockSize:        s.config.BlockSize,
+		MaxBlockSize:     s.config.MaxBlockSize,
+		ZNulls:           s.config.ZNulls,
+		Attention:        s.config.Attention,
+		Context:          s.ctx,
+		Logger:           s.logger,
+		Callbacks:        s.callbacks,
+		ProgressInterval: s.config.ProgressInterval,
 	}
-	
+
 	receiverConfig := &ReceiverConfig{
 		Use32BitCRC:   s.config.Use32BitCRC,
 		EscapeControl: s.config.EscapeControl,
@@ -144,10 +146,10 @@ func NewSession(reader ReaderWithTimeout, writer io.Writer, opts ...Option) *Ses
 		Context:       s.ctx,
 		Logger:        s.logger,
 	}
-	
+
 	s.sender = NewSender(reader, writer, senderConfig)
 	s.receiver = NewReceiver(reader, writer, receiverConfig)
-	
+
 	return s
 }
 
@@ -158,13 +160,13 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 	if ctx == nil {
 		ctx = s.ctx
 	}
-	
+
 	// Notify file start
 	s.callbacks.OnFileStart(filename, fileInfo.Size(), fileInfo.Mode())
-	
+
 	// Build file header
 	fileHeader := BuildFileHeader(filename, fileInfo, 0, 0)
-	
+
 	// Initialize receiver if needed (skip if already initialized)
 	if !s.sender.initialized {
 		if err := s.sender.GetReceiverInit(); err != nil {
@@ -172,18 +174,18 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 			return err
 		}
 	}
-	
+
 	// Send file
 	err := s.sender.SendFile(filename, file, fileInfo, fileHeader)
-	
+
 	if err != nil {
 		s.callbacks.OnError(err, "send file")
 		return err
 	}
-	
+
 	// Notify file complete
 	s.callbacks.OnFileComplete(filename, fileInfo.Size(), 0)
-	
+
 	return nil
 }
 
@@ -194,9 +196,9 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 	if ctx == nil {
 		ctx = s.ctx
 	}
-	
+
 	s.logger.Info("ReceiveFile: waiting for ZFILE")
-	
+
 	// Wait for ZFILE
 	fileHeader, err := s.receiver.WaitForZFILE()
 	if err != nil {
@@ -204,9 +206,9 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 		s.callbacks.OnError(err, "wait for ZFILE")
 		return err
 	}
-	
+
 	s.logger.Debug("ReceiveFile: got ZFILE header: %q", fileHeader)
-	
+
 	// Parse file header
 	filename, size, mtime, mode, _, _, err := ParseFileHeader(fileHeader)
 	if err != nil {
@@ -214,9 +216,9 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 		s.callbacks.OnError(err, "parse file header")
 		return err
 	}
-	
+
 	s.logger.Info("ReceiveFile: file=%s, size=%d, mode=%o, mtime=%d", filename, size, mode, mtime)
-	
+
 	// Prompt user
 	accept, err := s.callbacks.OnFilePrompt(filename, size, mode)
 	if err != nil {
@@ -230,7 +232,7 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 		}
 		return NewError(ErrFileSkipped, filename)
 	}
-	
+
 	// Create file
 	var file io.Writer
 	if s.callbacks.OnFileCreate != nil {
@@ -243,27 +245,27 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 		s.callbacks.OnError(err, "create file")
 		return err
 	}
-	
+
 	// Close file when done
 	if closer, ok := file.(io.Closer); ok {
 		defer closer.Close()
 	}
-	
+
 	// Notify file start
 	s.callbacks.OnFileStart(filename, size, mode)
-	
+
 	// Receive file
 	s.logger.Info("ReceiveFile: receiving %d bytes", size)
 	err = s.receiver.ReceiveFile(file, size)
-	
+
 	if err != nil {
 		s.logger.Error("ReceiveFile: ReceiveFile error: %v", err)
 		s.callbacks.OnError(err, "receive file")
 		return err
 	}
-	
+
 	s.logger.Info("ReceiveFile: completed")
-	
+
 	// Set file permissions and mtime if possible
 	if fileInfo, ok := file.(interface {
 		Chmod(os.FileMode) error
@@ -275,10 +277,10 @@ func (s *Session) ReceiveFile(ctx context.Context) error {
 		os.Chmod(f.Name(), mode)
 		os.Chtimes(f.Name(), time.Unix(mtime, 0), time.Unix(mtime, 0))
 	}
-	
+
 	// Notify file complete
 	s.callbacks.OnFileComplete(filename, size, 0)
-	
+
 	return nil
 }
 
@@ -288,7 +290,7 @@ func (s *Session) SendFiles(ctx context.Context, files []FileInfo) error {
 	if err := s.sender.GetReceiverInit(); err != nil {
 		return err
 	}
-	
+
 	// Send each file
 	for _, fileInfo := range files {
 		// Open file
@@ -305,7 +307,7 @@ func (s *Session) SendFiles(ctx context.Context, files []FileInfo) error {
 			}
 			file = f
 			defer f.Close()
-			
+
 			// Get file info
 			info, err := f.Stat()
 			if err != nil {
@@ -314,12 +316,12 @@ func (s *Session) SendFiles(ctx context.Context, files []FileInfo) error {
 			}
 			fileInfo.Info = info
 		}
-		
+
 		if err != nil {
 			s.callbacks.OnError(err, "open file")
 			continue
 		}
-		
+
 		// Send file
 		if err := s.SendFile(ctx, fileInfo.Filename, file, fileInfo.Info); err != nil {
 			// Check if file was skipped
@@ -329,7 +331,7 @@ func (s *Session) SendFiles(ctx context.Context, files []FileInfo) error {
 				s.callbacks.OnError(err, "send file")
 				continue
 			}
-			
+
 			// For other errors, check if we should retry
 			if s.callbacks.OnError(err, "send file") {
 				// Retry once
@@ -341,20 +343,20 @@ func (s *Session) SendFiles(ctx context.Context, files []FileInfo) error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 
 // ReceiveFiles receives multiple files over the session.
 func (s *Session) ReceiveFiles(ctx context.Context, maxFiles int) error {
 	filesReceived := 0
-	
+
 	for {
 		// Check max files limit
 		if maxFiles > 0 && filesReceived >= maxFiles {
 			break
 		}
-		
+
 		// Receive file
 		err := s.ReceiveFile(ctx)
 		if err != nil {
@@ -364,10 +366,10 @@ func (s *Session) ReceiveFiles(ctx context.Context, maxFiles int) error {
 			}
 			return err
 		}
-		
+
 		filesReceived++
 	}
-	
+
 	return nil
 }
 
@@ -376,4 +378,3 @@ type FileInfo struct {
 	Filename string
 	Info     os.FileInfo
 }
-
