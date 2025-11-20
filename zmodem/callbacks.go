@@ -13,7 +13,7 @@ type Callbacks struct {
 	// Return true to accept the file, false to skip it.
 	// If an error is returned, the transfer is aborted.
 	OnFilePrompt func(filename string, size int64, mode os.FileMode) (bool, error)
-	
+
 	// OnProgress is called periodically during file transfer.
 	// filename: name of the file being transferred
 	// transferred: bytes transferred so far
@@ -23,11 +23,11 @@ type Callbacks struct {
 	
 	// OnFileStart is called when a file transfer starts.
 	OnFileStart func(filename string, size int64, mode os.FileMode)
-	
+
 	// OnFileComplete is called when a file transfer completes.
 	// duration: time taken for the transfer
 	OnFileComplete func(filename string, bytesTransferred int64, duration time.Duration)
-	
+
 	// OnError is called when an error occurs.
 	// context: description of where the error occurred
 	// Return true to retry, false to abort.
@@ -35,15 +35,15 @@ type Callbacks struct {
 	
 	// OnEvent is called for protocol events (debugging/logging).
 	OnEvent func(event Event)
-	
+
 	// OnFileList is called when the remote initiates a receive (runs 'rz').
 	// It should return a list of files to send, or nil/empty slice if no files to send.
 	OnFileList func() ([]string, error)
-	
+
 	// OnFileOpen is called when opening a file for reading (sender).
 	// If nil, uses default file opening.
 	OnFileOpen func(filename string) (io.Reader, os.FileInfo, error)
-	
+
 	// OnFileCreate is called when creating a file for writing (receiver).
 	// If nil, uses default file creation.
 	OnFileCreate func(filename string, size int64, mode os.FileMode) (io.Writer, error)
@@ -94,58 +94,57 @@ func mergeCallbacks(user *Callbacks) *Callbacks {
 	if user == nil {
 		return defaultCallbacks()
 	}
-	
+
 	def := defaultCallbacks()
-	
+
 	result := &Callbacks{}
-	
+
 	// File prompt
 	if user.OnFilePrompt != nil {
 		result.OnFilePrompt = user.OnFilePrompt
 	} else {
 		result.OnFilePrompt = def.OnFilePrompt
 	}
-	
+
 	// Progress
 	if user.OnProgress != nil {
 		result.OnProgress = user.OnProgress
 	} else {
 		result.OnProgress = def.OnProgress
 	}
-	
+
 	// File start
 	if user.OnFileStart != nil {
 		result.OnFileStart = user.OnFileStart
 	} else {
 		result.OnFileStart = def.OnFileStart
 	}
-	
+
 	// File complete
 	if user.OnFileComplete != nil {
 		result.OnFileComplete = user.OnFileComplete
 	} else {
 		result.OnFileComplete = def.OnFileComplete
 	}
-	
+
 	// Error
 	if user.OnError != nil {
 		result.OnError = user.OnError
 	} else {
 		result.OnError = def.OnError
 	}
-	
+
 	// Event
 	if user.OnEvent != nil {
 		result.OnEvent = user.OnEvent
 	} else {
 		result.OnEvent = def.OnEvent
 	}
-	
+
 	// File operations (nil means use default)
 	result.OnFileList = user.OnFileList
 	result.OnFileOpen = user.OnFileOpen
 	result.OnFileCreate = user.OnFileCreate
-	
+
 	return result
 }
-
