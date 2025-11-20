@@ -5,6 +5,10 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased] - 2025-09-16
 
+## [0.1.2] - 2025-11-20
+### Fixed
+- Fix issue with using file path instead of name when sending to remote "rz"
+
 ## [0.1.0] - 2025-11-20
 ### Initial Commit
 - Code works for in library mode when sending a file when remote invokes "rz"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path"
 	"time"
 )
 
@@ -162,10 +163,11 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 	}
 
 	// Notify file start
-	s.callbacks.OnFileStart(filename, fileInfo.Size(), fileInfo.Mode())
+	_, actualFileName := path.Split(filename)
+	s.callbacks.OnFileStart(actualFileName, fileInfo.Size(), fileInfo.Mode())
 
 	// Build file header
-	fileHeader := BuildFileHeader(filename, fileInfo, 0, 0)
+	fileHeader := BuildFileHeader(actualFileName, fileInfo, 0, 0)
 
 	// Initialize receiver if needed (skip if already initialized)
 	if !s.sender.initialized {
@@ -176,7 +178,7 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 	}
 
 	// Send file
-	err := s.sender.SendFile(filename, file, fileInfo, fileHeader)
+	err := s.sender.SendFile(actualFileName, file, fileInfo, fileHeader)
 
 	if err != nil {
 		s.callbacks.OnError(err, "send file")
@@ -184,7 +186,7 @@ func (s *Session) SendFile(ctx context.Context, filename string, file io.Reader,
 	}
 
 	// Notify file complete
-	s.callbacks.OnFileComplete(filename, fileInfo.Size(), 0)
+	s.callbacks.OnFileComplete(actualFileName, fileInfo.Size(), 0)
 
 	return nil
 }

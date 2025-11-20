@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -283,19 +284,20 @@ func (s *SSHSession) SendFileWhenRemoteReceives(ctx context.Context, file FileIn
 		s.stdin.Close()
 		return err
 	}
-	
+
 	// Build file header
-	fileHeader := BuildFileHeader(file.Filename, file.Info, 0, 0)
-	
+	_, actualName := path.Split(file.Filename)
+	fileHeader := BuildFileHeader(actualName, file.Info, 0, 0)
+
 	// Send file using the sender directly
-	if err := s.Session.sender.SendFile(file.Filename, fileReader, file.Info, fileHeader); err != nil {
+	if err := s.Session.sender.SendFile(actualName, fileReader, file.Info, fileHeader); err != nil {
 		s.stdin.Close()
 		return err
 	}
-	
+
 	// Close stdin to signal completion
 	s.stdin.Close()
-	
+
 	// Wait for remote command to finish
 	select {
 	case err2 := <-done:
