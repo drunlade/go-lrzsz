@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
-	"path"
+	path "path/filepath"
 	"time"
 
 	"golang.org/x/crypto/ssh"
