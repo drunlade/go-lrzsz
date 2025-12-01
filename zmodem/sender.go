@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"time"
 )
 
@@ -671,8 +672,11 @@ func BuildFileHeader(filename string, fileInfo os.FileInfo, filesLeft, totalLeft
 	buf := make([]byte, totalSize)
 	pos := 0
 
+	// Make sure we have ONLY the file name
+	_, fname := path.Split(filename)
+
 	// Copy filename
-	copy(buf[pos:], []byte(filename))
+	copy(buf[pos:], []byte(fname))
 	pos += len(filename)
 
 	// Null terminator
